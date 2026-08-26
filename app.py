@@ -165,9 +165,15 @@ def get_rag_engine():
     
     class RAGEngine:
         def __init__(self):
-            model_path = get_resource_path("models/all-MiniLM-L6-v2")
+           
+            local_model_path = get_resource_path("models/all-MiniLM-L6-v2")
+            if os.path.exists(local_model_path):
+                model_name = local_model_path
+            else:
+                model_name = "sentence-transformers/all-MiniLM-L6-v2"
+            
             self.embeddings = HuggingFaceEmbeddings(
-                model_name=model_path,
+                model_name=model_name,
                 model_kwargs={"device": "cpu"},
                 encode_kwargs={"normalize_embeddings": True},
             )
@@ -320,7 +326,6 @@ DOI：{result['doi']}
     tools = [tool_search, tool_get_abstract]
     llm_with_tools = llm.bind_tools(tools)
     
-
     system_prompt = """你是学术文献检索助手。
 
 当用户提出研究问题时，严格按以下步骤执行：
@@ -344,7 +349,6 @@ DOI：{result['doi']}
     response = llm_with_tools.invoke(messages)
     messages.append(response)
     
- 
     max_rounds = 8
     for _ in range(max_rounds):
         if not response.tool_calls:
@@ -366,7 +370,6 @@ def main():
     st.title("📚 学术文献检索 + 文档问答助手")
     st.markdown("---")
     
-
     with st.sidebar:
         st.header("⚙️ 配置")
         
@@ -390,15 +393,12 @@ def main():
         st.caption("- DeepSeek: platform.deepseek.com")
         st.caption("- Elsevier: dev.elsevier.com")
     
-
     if not get_deepseek_key() or not get_elsevier_key():
         st.warning("⚠️ 请在左侧边栏配置 API Key 后使用")
         return
     
-    # 两个标签页
     tab1, tab2 = st.tabs(["🔍 文献检索", "📄 文档问答"])
     
-    # ===== 标签页 1：文献检索 =====
     with tab1:
         st.subheader("智能文献检索")
         st.write("用中文提问，AI 会自动拆解关键词、多角度搜索、获取完整摘要、汇总结果")
@@ -419,7 +419,6 @@ def main():
                     st.markdown("### 📋 检索结果")
                     st.markdown(answer)
     
-    # ===== 标签页 2：文档问答 =====
     with tab2:
         st.subheader("文档问答（RAG）")
         st.write("上传 PDF/TXT/DOCX 文档，基于文档内容回答问题")
@@ -429,7 +428,7 @@ def main():
                 rag = get_rag_engine()
             except Exception as e:
                 st.error(f"嵌入模型加载失败：{e}")
-                st.info("请检查网络连接，嵌入模型需要从 HuggingFace 下载")
+                st.info("正在从 HuggingFace 下载嵌入模型，首次加载需要 1-2 分钟，请刷新页面重试...")
                 return
         
         uploaded_files = st.file_uploader("上传文档（支持 PDF、TXT、DOCX，可多选）",
