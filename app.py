@@ -12,10 +12,20 @@ from dotenv import load_dotenv
 
 import streamlit as st
 
-
+# 加载本地 .env
 load_dotenv()
 
 
+def get_resource_path(relative_path):
+    """获取资源路径，兼容打包后的 exe 和本地开发"""
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+
+# ============ 页面配置 ============
 st.set_page_config(
     page_title="学术文献检索助手",
     page_icon="📚",
@@ -24,7 +34,6 @@ st.set_page_config(
 
 # ============ API Key 管理 ============
 def get_deepseek_key():
-   
     if "DEEPSEEK_API_KEY" in st.secrets:
         return st.secrets["DEEPSEEK_API_KEY"]
     if os.getenv("LLM_API_KEY"):
@@ -105,7 +114,7 @@ def search_papers(keyword, limit=10, year_from=None, year_to=None):
         return f"❌ 搜索出错：{e}"
 
 def get_abstract_by_doi(doi):
-    """通过 DOI 获取摘要（用搜索 API）"""
+    """通过 DOI 获取完整摘要（用搜索 API）"""
     api_key = get_elsevier_key()
     if not api_key:
         return "❌ 未配置 Elsevier API Key"
@@ -127,6 +136,10 @@ def get_abstract_by_doi(doi):
             return f"❌ 找不到 DOI 为 {doi} 的论文。"
         
         e = entries[0]
+        abstract = e.get("dc:description", "")
+        if not abstract:
+            abstract = "（该论文暂无摘要）"
+        
         return {
             "title": e.get("dc:title", ""),
             "authors": format_authors(e.get("dc:creator", ""), 20),
@@ -134,7 +147,7 @@ def get_abstract_by_doi(doi):
             "year": e.get("prism:coverDate", "")[:4],
             "cited": e.get("citedby-count", "0"),
             "doi": e.get("prism:doi", doi),
-            "abstract": e.get("dc:description", "暂无摘要"),
+            "abstract": abstract,
         }
     except Exception as e:
         return f"❌ 获取出错：{e}"
@@ -152,9 +165,9 @@ def get_rag_engine():
     
     class RAGEngine:
         def __init__(self):
-           
+            model_path = get_resource_path("models/all-MiniLM-L6-v2")
             self.embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                model_name=model_path,
                 model_kwargs={"device": "cpu"},
                 encode_kwargs={"normalize_embeddings": True},
             )
@@ -255,7 +268,7 @@ def get_rag_engine():
 
 # ============ AI 文献检索 ============
 def ai_search(question):
-    """AI 自动拆解问题，多关键词搜索，汇总结果"""
+    """AI 自动拆解问题，多关键词搜索，获取完整摘要，汇总结果"""
     from langchain_openai import ChatOpenAI
     from langchain_core.tools import tool
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -273,11 +286,10 @@ def ai_search(question):
     
     @tool
     def tool_search(keyword: str, limit: int = 8) -> str:
-        """搜索学术论文，传入英文关键词。"""
+        """搜索学术论文，传入英文关键词。返回论文标题、作者、期刊、年份、DOI和摘要片段。"""
         result = search_papers(keyword, limit=limit)
         if isinstance(result, str):
             return result
-        # 格式化为文本给 AI
         text = f"找到约 {result['total']} 篇：\n\n"
         for i, p in enumerate(result["papers"], 1):
             text += f"【{i}】{p['title']}\n"
@@ -286,38 +298,54 @@ def ai_search(question):
             if p['doi']:
                 text += f"    DOI: {p['doi']}\n"
             if p['abstract']:
-                text += f"    摘要：{p['abstract'][:400]}\n"
+                text += f"    摘要片段：{p['abstract'][:500]}\n"
+            else:
+                text += f"    摘要片段：（无）\n"
             text += "\n"
         return text
     
     @tool
     def tool_get_abstract(doi: str) -> str:
-        """根据 DOI 获取论文完整摘要。"""
+        """根据 DOI 获取论文完整摘要。必须对最相关的3-5篇论文调用此工具获取完整摘要后再回答。"""
         result = get_abstract_by_doi(doi)
         if isinstance(result, str):
             return result
-        return f"标题：{result['title']}\n作者：{result['authors']}\n期刊：{result['journal']} | {result['year']}\n摘要：\n{result['abstract']}"
+        return f"""标题：{result['title']}
+作者：{result['authors']}
+期刊：{result['journal']} | {result['year']} | 引用 {result['cited']}
+DOI：{result['doi']}
+完整摘要：
+{result['abstract']}"""
     
     tools = [tool_search, tool_get_abstract]
     llm_with_tools = llm.bind_tools(tools)
     
+
     system_prompt = """你是学术文献检索助手。
-当用户提出研究问题时：
+
+当用户提出研究问题时，严格按以下步骤执行：
+
 1. 拆解问题，提取3-5个关键概念，翻译成英文
 2. 生成3-5组不同角度的英文关键词
 3. 用 tool_search 分别搜索（每次一个关键词）
-4. 汇总结果，按相关性整理，标注最相关的文献
-5. 如果需要某篇详情，用 tool_get_abstract 获取摘要
+4. 【必须】从搜索结果中挑选最相关的3-5篇论文，用 tool_get_abstract 获取它们的完整摘要
+   - 即使搜索结果里有摘要片段，也必须调用 tool_get_abstract 获取完整摘要
+   - 至少获取3篇论文的完整摘要
+5. 基于论文的完整摘要内容 + 标题信息 + 你的专业知识，综合回答用户问题
+6. 回答时注明哪些结论来自哪篇论文
+7. 最后列出所有相关文献，按相关性分组
 
-关键词用简单英文词组，不要加 AND/OR/引号。"""
+关键词用简单英文词组，不要加 AND/OR/引号。
+
+重要：不获取完整摘要就回答是不合格的，必须先调用 tool_get_abstract。"""
     
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=question)]
     
     response = llm_with_tools.invoke(messages)
     messages.append(response)
     
-    # 处理工具调用
-    max_rounds = 5
+ 
+    max_rounds = 8
     for _ in range(max_rounds):
         if not response.tool_calls:
             break
@@ -330,13 +358,6 @@ def ai_search(question):
             messages.append(ToolMessage(content=str(output), tool_call_id=tc["id"]))
         response = llm_with_tools.invoke(messages)
         messages.append(response)
-    
-  
-    all_papers = []
-    for msg in messages:
-        if isinstance(msg, ToolMessage):
-        
-            pass
     
     return response.content, None
 
@@ -369,6 +390,7 @@ def main():
         st.caption("- DeepSeek: platform.deepseek.com")
         st.caption("- Elsevier: dev.elsevier.com")
     
+
     if not get_deepseek_key() or not get_elsevier_key():
         st.warning("⚠️ 请在左侧边栏配置 API Key 后使用")
         return
@@ -379,7 +401,7 @@ def main():
     # ===== 标签页 1：文献检索 =====
     with tab1:
         st.subheader("智能文献检索")
-        st.write("用中文提问，AI 会自动拆解关键词、多角度搜索、汇总结果")
+        st.write("用中文提问，AI 会自动拆解关键词、多角度搜索、获取完整摘要、汇总结果")
         
         question = st.text_area("输入你的研究问题", height=80,
                                placeholder="例如：为什么碳酸氢钠浸出液除硅效果比钒渣钠化焙烧浸出液差？")
@@ -389,7 +411,7 @@ def main():
             search_btn = st.button("🔍 开始检索", type="primary", use_container_width=True)
         
         if search_btn and question.strip():
-            with st.spinner("AI 正在拆解问题并检索文献..."):
+            with st.spinner("AI 正在拆解问题、检索文献并获取完整摘要...（约30-60秒）"):
                 answer, error = ai_search(question.strip())
                 if error:
                     st.error(error)
@@ -402,7 +424,6 @@ def main():
         st.subheader("文档问答（RAG）")
         st.write("上传 PDF/TXT/DOCX 文档，基于文档内容回答问题")
         
-        # 初始化 RAG 引擎
         with st.spinner("正在加载嵌入模型（首次运行需要下载，请稍候）..."):
             try:
                 rag = get_rag_engine()
@@ -411,14 +432,12 @@ def main():
                 st.info("请检查网络连接，嵌入模型需要从 HuggingFace 下载")
                 return
         
-        # 上传文件
         uploaded_files = st.file_uploader("上传文档（支持 PDF、TXT、DOCX，可多选）",
                                          type=["pdf", "txt", "docx"],
                                          accept_multiple_files=True)
         
         if uploaded_files:
             for f in uploaded_files:
-                # 检查是否已加载
                 if f.name not in rag.loaded_files:
                     with st.spinner(f"正在加载 {f.name}..."):
                         result = rag.load_document(f)
