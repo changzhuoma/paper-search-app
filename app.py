@@ -1,6 +1,6 @@
 """
 学术文献检索 + 文档问答 Web 应用
-基于 Streamlit，部署后别人通过浏览器直接使用
+
 """
 
 import os
@@ -12,10 +12,10 @@ from dotenv import load_dotenv
 
 import streamlit as st
 
-# 加载本地 .env（本地开发用，部署时用 Streamlit secrets）
+
 load_dotenv()
 
-# ============ 页面配置 ============
+
 st.set_page_config(
     page_title="学术文献检索助手",
     page_icon="📚",
@@ -24,7 +24,7 @@ st.set_page_config(
 
 # ============ API Key 管理 ============
 def get_deepseek_key():
-    # 优先从 secrets（部署），其次环境变量，最后 session_state
+   
     if "DEEPSEEK_API_KEY" in st.secrets:
         return st.secrets["DEEPSEEK_API_KEY"]
     if os.getenv("LLM_API_KEY"):
@@ -152,7 +152,7 @@ def get_rag_engine():
     
     class RAGEngine:
         def __init__(self):
-            # 嵌入模型（Streamlit Cloud 在国外可直接下载）
+           
             self.embeddings = HuggingFaceEmbeddings(
                 model_name="sentence-transformers/all-MiniLM-L6-v2",
                 model_kwargs={"device": "cpu"},
@@ -253,7 +253,7 @@ def get_rag_engine():
     
     return RAGEngine()
 
-# ============ AI 文献检索（自动拆解+多关键词搜索） ============
+# ============ AI 文献检索 ============
 def ai_search(question):
     """AI 自动拆解问题，多关键词搜索，汇总结果"""
     from langchain_openai import ChatOpenAI
@@ -331,11 +331,11 @@ def ai_search(question):
         response = llm_with_tools.invoke(messages)
         messages.append(response)
     
-    # 收集搜索到的论文（用于展示）
+  
     all_papers = []
     for msg in messages:
         if isinstance(msg, ToolMessage):
-            # 简单解析，提取论文信息
+        
             pass
     
     return response.content, None
@@ -345,11 +345,10 @@ def main():
     st.title("📚 学术文献检索 + 文档问答助手")
     st.markdown("---")
     
-    # 侧边栏：API Key 配置
+
     with st.sidebar:
         st.header("⚙️ 配置")
         
-        # 检查是否已配置
         deepseek_key = get_deepseek_key()
         elsevier_key = get_elsevier_key()
         
@@ -370,7 +369,6 @@ def main():
         st.caption("- DeepSeek: platform.deepseek.com")
         st.caption("- Elsevier: dev.elsevier.com")
     
-    # 如果没有配置 Key，提示
     if not get_deepseek_key() or not get_elsevier_key():
         st.warning("⚠️ 请在左侧边栏配置 API Key 后使用")
         return
@@ -429,7 +427,6 @@ def main():
                         else:
                             st.error(result)
         
-        # 显示已加载文档
         if rag.loaded_files:
             st.info(rag.list_files())
             col1, col2 = st.columns([1, 5])
